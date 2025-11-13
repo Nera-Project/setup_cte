@@ -1,81 +1,63 @@
-#!/usr/bin/env python3
-"""
-Entry point CLI for CTE Registration tool.
-"""
 import argparse
-import sys
-from core.logger import get_logger
+import logging
 from core.environment import EnvironmentManager
 from core.repository import RepositoryManager
-from core.compatibility_checker import CompatibilityChecker
-from core.installer import Installer
-from core.encrypt_asset import EncryptAssetManager
-from core.issue_resolver import IssueResolver
 
-logger = get_logger(__name__)
+# Logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
 
-def build_parser():
-    p = argparse.ArgumentParser(prog="cte-registration", description="CTE registration & installer tool")
-    group = p.add_mutually_exclusive_group(required=True)
-    group.add_argument("--check", action="store_true", help="Check compatibility only")
-    group.add_argument("--install", action="store_true", help="Perform full install (will check compatibility first)")
-    group.add_argument("--encrypt", action="store_true", help="Apply automatic asset encryption (requires installed agent)")
-    group.add_argument("--resolve", action="store_true", help="Attempt to resolve common issues")
-    p.add_argument("--repo-info-url", default=None, help="(optional) override GitHub main_package.info raw URL")
-    p.add_argument("--no-venv", action="store_true", help="Do not create/enter virtualenv (use system python)")
-    p.add_argument("--verbose", action="store_true")
-    return p
 
 def main():
-    args = build_parser().parse_args()
+    parser = argparse.ArgumentParser(description="Thales CTE Setup & Integration Tool")
+    parser.add_argument("--check", action="store_true", help="Check environment and compatibility")
+    parser.add_argument("--install", action="store_true", help="Install Thales CTE Agent")
+    parser.add_argument("--encrypt", action="store_true", help="Encrypt asset folder")
+    parser.add_argument("--fix", action="store_true", help="Resolve common issues automatically")
 
-    if args.verbose:
-        logger.setLevel("DEBUG")
+    args = parser.parse_args()
 
-    env = EnvironmentManager(use_venv=not args.no_venv)
-    repo = RepositoryManager(override_url=args.repo_info_url)
-    checker = CompatibilityChecker()
-    installer = Installer(repo_manager=repo)
-    encrypt_mgr = EncryptAssetManager()
-    resolver = IssueResolver(installer=installer)
+    # Validate we are inside venv (setup.sh handles env creation)
+    EnvironmentManager.validate_virtualenv()
 
-    try:
-        env.ensure_environment()
-        env.install_requirements()
-    except Exception as e:
-        logger.error("Environment preparation failed: %s", e)
-        sys.exit(2)
-
+    # Execute logic
     if args.check:
-        kernel = checker.get_kernel_version()
-        logger.info("Detected kernel: %s", kernel)
-        compat = checker.check_kernel_support(kernel)
-        if compat is None:
-            logger.warning("Compatibility check could not be fully determined automatically. See message above.")
-        else:
-            logger.info("Compatibility table rows: %d", len(compat))
-            for row in compat:
-                logger.info(" - %s", row)
-        return
+        logger.info("Performing environment and repository compatibility check...")
+        try:
+            EnvironmentManager.check_system_info()
+            repo = RepositoryManager()
+            url = repo.get_active_repo_url()
+            logger.info(f"Active repository URL detected: {url}")
+            logger.info("Environment check completed successfully.")
+        except Exception as e:
+            logger.error(f"Error during environment check: {e}")
+            exit(1)
 
-    if args.install:
-        kernel = checker.get_kernel_version()
-        logger.info("Detected kernel: %s", kernel)
-        compat = checker.check_kernel_support(kernel)
-        if compat is None:
-            logger.warning("Cannot verify compatibility automatically. Aborting install. You can re-run with --check to inspect.")
-            return
-        # choose download target based on OS detection inside installer
-        installer.perform_install()
-        return
+    elif args.install:
+        logger.info("CTE Agent installation process started...")
+        # TODO: add integration logic
+        logger.info("Installation feature not implemented yet.")
+    elif args.encrypt:
+        logger.info("Starting folder encryption process...")
+        # TODO: encryption automation
+        logger.info("Encryption feature not implemented yet.")
+    elif args.fix:
+        logger.info("Auto fixing common issues...")
+        # TODO: add automatic repair logic
+        logger.info("Fixing feature not implemented yet.")
+    else:
+        parser.print_help()
 
-    if args.encrypt:
-        encrypt_mgr.auto_encrypt()
-        return
-
-    if args.resolve:
-        resolver.auto_resolve()
-        return
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.warning("Interrupted by user.")
+    except Exception as e:
+        logger.error(f"Execution failed: {e}")
+        exit(1)

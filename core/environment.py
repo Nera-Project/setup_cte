@@ -1,36 +1,108 @@
+import logging
 import os
-import subprocess
 import sys
-from pathlib import Path
-from core.logger import get_logger
+import platform
+import subprocess
+import shutil
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 class EnvironmentManager:
-    def __init__(self, venv_path=".venv", use_venv=True):
-        self.venv_path = Path(venv_path)
-        self.use_venv = use_venv
+    @staticmethod
+    def validate_virtualenv():
+        """
+        Pastikan script dijalankan di dalam virtual environment.
+        """
+        if sys.prefix == sys.base_prefix:
+            logger.error("❌ Not running inside a virtual environment. Use ./setup.sh instead.")
+            sys.exit(1)
+        venv_path = os.environ.get("VIRTUAL_ENV", "(unknown)")
+        logger.info(f"✓ Running inside virtual environment: {venv_path}")
 
-    def ensure_environment(self):
-        if not self.use_venv:
-            logger.info("Skipping virtualenv creation (use_venv=False).")
-            return
-        if not self.venv_path.exists():
-            logger.info("Creating virtual environment at %s", self.venv_path)
-            subprocess.run([sys.executable, "-m", "venv", str(self.venv_path)], check=True)
+    @staticmethod
+    def check_system_info():
+        """
+        Menampilkan informasi dasar OS, kernel, dan package penting.
+        """
+        logger.info("Collecting system information...")
+        uname = platform.uname()
+        logger.info(f"System: {uname.system}")
+        logger.info(f"Node Name: {uname.node}")
+        logger.info(f"Release: {uname.release}")
+        logger.info(f"Version: {uname.version}")
+        logger.info(f"Machine: {uname.machine}")
+        logger.info(f"Processor: {uname.processor}")
+
+        # Kernel version (for compatibility check)
+        try:
+            kernel_version = subprocess.check_output(["uname", "-r"], text=True).strip()
+            logger.info(f"Kernel Version: {kernel_version}")
+        except Exception as e:
+            logger.warning(f"Could not fetch kernel version: {e}")
+            kernel_version = None
+
+        # Check Python version inside venv
+        logger.info(f"Python Executable: {sys.executable}")
+        logger.info(f"Python Version: {platform.python_version()}")
+
+        # Check if gcc is available
+        gcc_path = shutil.which("gcc")
+        if gcc_path:
+            logger.info(f"✓ GCC found at {gcc_path}")
         else:
-            logger.info("Virtual environment exists at %s", self.venv_path)
+            logger.warning("⚠️ GCC not found. Some modules (e.g. psutil) may fail to build.")
 
-    def pip_path(self):
-        if self.use_venv:
-            # Unix-style path
-            return str(self.venv_path / "bin" / "pip")
-        return sys.executable.replace("python", "pip") if "python" in sys.executable else "pip"
+        # Detect package manager
+        pkg_mgr = EnvironmentManager.detect_package_manager()
+        logger.info(f"Detected Package Manager: {pkg_mgr}")
 
-    def install_requirements(self, req_file="requirements.txt"):
-        if not Path(req_file).exists():
-            logger.warning("No requirements.txt found at %s. Skipping pip install.", req_file)
-            return
-        pip = self.pip_path()
-        logger.info("Installing requirements from %s using %s", req_file, pip)
-        subprocess.run([pip, "install", "-r", req_file], check=True)
+        # Return structured data for possible future logic
+        return {
+            "os": uname.system,
+            "kernel": kernel_version,
+            "python": platform.python_version(),
+            "gcc": gcc_path,
+            "pkg_mgr": pkg_mgr
+        }
+
+    @staticmethod
+    def detect_package_manager():
+        """
+        Mendeteksi package manager yang digunakan (apt, yum, dnf, zypper, dll.)
+        """
+        if shutil.which("apt"):
+            return "apt"
+        elif shutil.which("dnf"):
+            return "dnf"
+        elif shutil.which("yum"):
+            return "yum"
+        elif shutil.which("zypper"):
+            return "zypper"
+        else:
+            return "unknown"
+
+    @staticmethod
+    def run_command(cmd, cwd=None):
+        """
+        Helper untuk menjalankan command shell dengan logging.
+        """
+        logger.debug(f"Running command: {cmd}")
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=cwd,
+                shell=isinstance(cmd, str),
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            if result.stdout:
+                logger.debug(result.stdout.strip())
+            if result.stderr:
+                logger.debug(result.stderr.strip())
+            return result.stdout.strip()
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Command failed: {e.cmd}\n{e.stderr}")
+            raise
+
