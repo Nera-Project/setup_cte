@@ -30,7 +30,7 @@ def main():
         try:
             EnvironmentManager.check_system_info()
             repo = RepositoryManager()
-            url = repo.get_active_repo_url()
+            url = repo.fetch_active_repo_url()
             logger.info(f"Active repository URL detected: {url}")
             logger.info("Environment check completed successfully.")
         except Exception as e:
