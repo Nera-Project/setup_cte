@@ -74,7 +74,7 @@ class CompatibilityChecker:
                         "CTE Start": k["START"],
                         "CTE End": k["END"],
                         "Compatibility": compat,
-                        "Support": support_status
+                        "Support Status": support_status
                     })
 
         if not results:
@@ -89,7 +89,7 @@ class CompatibilityChecker:
             logger.warning("No results to display.")
             return
 
-        headers = ["OS", "CTE Start", "CTE End", "Compatibility", "Compatibility Status"]
+        headers = ["OS", "CTE Start", "CTE End", "Compatibility", "Support Status"]
         col_widths = [max(len(str(row[h])) for row in results + [dict(zip(headers, headers))]) for h in headers]
         sep = "╬".join("═" * (w + 2) for w in col_widths)
 
