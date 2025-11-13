@@ -74,7 +74,7 @@ class CompatibilityChecker:
                         "CTE Start": k["START"],
                         "CTE End": k["END"],
                         "Compatibility": compat,
-                        "Support": support_status
+                        "Support Status": support_status
                     })
 
         if not results:
