@@ -35,7 +35,7 @@ class EnvironmentManager:
 
         # Kernel version (for compatibility check)
         try:
-            kernel_version = subprocess.check_output(["uname", "-r"], text=True).strip()
+            kernel_version = subprocess.check_output(["uname", "-r"], universal_newlines=True).strip()
             logger.info(f"Kernel Version: {kernel_version}")
         except Exception as e:
             logger.warning(f"Could not fetch kernel version: {e}")
@@ -95,7 +95,7 @@ class EnvironmentManager:
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                universal_newlines=True
             )
             if result.stdout:
                 logger.debug(result.stdout.strip())

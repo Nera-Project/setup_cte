@@ -2,6 +2,7 @@ import argparse
 import logging
 from core.environment import EnvironmentManager
 from core.repository import RepositoryManager
+from core.compatibility import CompatibilityChecker  # ✅ NEW import
 
 # Logging setup
 logging.basicConfig(
@@ -24,15 +25,38 @@ def main():
     # Validate we are inside venv (setup.sh handles env creation)
     EnvironmentManager.validate_virtualenv()
 
-    # Execute logic
+    # ========================
+    # MAIN EXECUTION LOGIC
+    # ========================
     if args.check:
         logger.info("Performing environment and repository compatibility check...")
         try:
+            # ✅ 1. Check environment
             EnvironmentManager.check_system_info()
+
+            # ✅ 2. Fetch repository info
             repo = RepositoryManager()
             url = repo.fetch_active_repo_url()
             logger.info(f"Active repository URL detected: {url}")
+
+            # ✅ 3. Compatibility check (new feature)
+            compat = CompatibilityChecker()
+            kernel_version = compat.get_kernel_version()
+            logger.info(f"Detected kernel version: {kernel_version}")
+
+            table = compat.check_kernel_support(kernel_version)
+            if table:
+                compat.print_table(table)
+                summary = compat.summarize_compatibility(table)
+                if summary["compatible"]:
+                    logger.info(f"✅ This system is compatible with Thales CTE: {summary['reason']}")
+                else:
+                    logger.warning(f"⚠️  This system might NOT be fully compatible: {summary['reason']}")
+            else:
+                logger.warning("Could not determine Thales CTE compatibility automatically.")
+
             logger.info("Environment check completed successfully.")
+
         except Exception as e:
             logger.error(f"Error during environment check: {e}")
             exit(1)
@@ -41,14 +65,17 @@ def main():
         logger.info("CTE Agent installation process started...")
         # TODO: add integration logic
         logger.info("Installation feature not implemented yet.")
+
     elif args.encrypt:
         logger.info("Starting folder encryption process...")
         # TODO: encryption automation
         logger.info("Encryption feature not implemented yet.")
+
     elif args.fix:
         logger.info("Auto fixing common issues...")
         # TODO: add automatic repair logic
         logger.info("Fixing feature not implemented yet.")
+
     else:
         parser.print_help()
 
