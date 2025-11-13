@@ -1,86 +1,109 @@
-from utils.command import run_shell
+# core/compatibility_checker.py
 import requests
-from utils.parser import parse_portal_table
+import pdfplumber
+import re
+import json
+import warnings
+from utils.command import run_shell
 from utils import config
 from core.logger import get_logger
 
 logger = get_logger(__name__)
+warnings.filterwarnings("ignore", message="Could get FontBBox")
 
 class CompatibilityChecker:
-    def __init__(self, base_url=config.THALES_CM_URL):
-        self.base_url = base_url
+    def __init__(self,
+                 json_url="https://packages.vormetric.com/pub/cte_compatibility_matrix.json",
+                 pdf_path="./data/cte_release_status.pdf"):
+        self.json_url = json_url
+        self.pdf_path = pdf_path
 
+    # === Ambil kernel version ===
     def get_kernel_version(self):
         out = run_shell("uname -r")
         return out.strip()
 
+    # === Ambil matrix JSON dari Thales ===
+    def fetch_cte_compatibility(self):
+        logger.info(f"Fetching CTE compatibility matrix from {self.json_url}")
+        resp = requests.get(self.json_url, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
+
+    # === Parse PDF support status ===
+    def parse_cte_support_status(self):
+        logger.info(f"Parsing CTE release support status from {self.pdf_path}")
+        results = {}
+        pattern = re.compile(r"^(\d+\.\d+\.\d+)\s+[\dA-Za-z-]+\s+([A-Za-z\s]+)$")
+
+        with pdfplumber.open(self.pdf_path) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if not text:
+                    continue
+                for line in text.splitlines():
+                    match = pattern.match(line.strip())
+                    if match:
+                        version, status = match.groups()
+                        results[version.strip()] = status.strip()
+
+        return results
+
+    # === Cek kernel di JSON matrix + tambahkan support PDF ===
     def check_kernel_support(self, kernel_version):
-        qurl = f"{self.base_url}?sideBarIndex=0&radioOption=KERNEL&search={kernel_version}"
-        logger.info("Querying Thales compatibility matrix: %s", qurl)
         try:
-            resp = requests.get(qurl, timeout=15)
+            data = self.fetch_cte_compatibility()
+            support_data = self.parse_cte_support_status()
         except Exception as e:
-            logger.error("Failed to request Thales portal: %s", e)
+            logger.error(f"Failed to load compatibility data: {e}")
             return None
 
-        text = resp.text
-        # Detect Angular single-page app
-        if "<app-root" in text or "runtime.js" in text or "main.js" in text:
-            logger.warning("Thales portal appears to be a dynamic SPA (Angular). Cannot scrape table reliably.")
-            logger.info("Please open the following URL in a browser for manual verification: %s", qurl)
+        results = []
+        for os_entry in data["MAPPING"]:
+            for k in os_entry["KERNEL"]:
+                if kernel_version in k["NUM"]:
+                    compat = "Active" if k["END"] == "0" else f"Supported until {k['END']}"
+                    cte_version_base = '.'.join(k["START"].split('.')[:3])
+                    support_status = support_data.get(cte_version_base, "Unknown")
+
+                    results.append({
+                        "OS": os_entry["OS"],
+                        "CTE Start": k["START"],
+                        "CTE End": k["END"],
+                        "Compatibility": compat,
+                        "Support": support_status
+                    })
+
+        if not results:
+            logger.warning(f"No entry found for kernel: {kernel_version}")
             return None
 
-        table = parse_portal_table(text)
-        if not table:
-            logger.warning("No compatibility table parsed from Thales portal response.")
-            return None
+        return results
 
-        return table
-
-    def print_table(self, table):
-        """Pretty-print the compatibility table."""
-        if not table or len(table) < 2:
-            logger.warning("No valid table data to print.")
+    # === Cetak hasil dalam tabel rapi ===
+    def print_table(self, results):
+        if not results:
+            logger.warning("No results to display.")
             return
 
-        headers = table[0]
-        rows = table[1:]
-        col_widths = [max(len(str(row[i])) for row in rows + [headers]) for i in range(len(headers))]
-
+        headers = ["OS", "CTE Start", "CTE End", "Compatibility", "Support"]
+        col_widths = [max(len(str(row[h])) for row in results + [dict(zip(headers, headers))]) for h in headers]
         sep = "╬".join("═" * (w + 2) for w in col_widths)
+
         print("╔" + sep.replace("╬", "╦") + "╗")
         print("║ " + " ║ ".join(headers[i].ljust(col_widths[i]) for i in range(len(headers))) + " ║")
         print("╠" + sep.replace("╬", "╬") + "╣")
-        for row in rows:
-            print("║ " + " ║ ".join(str(row[i]).ljust(col_widths[i]) for i in range(len(headers))) + " ║")
+        for r in results:
+            print("║ " + " ║ ".join(str(r[h]).ljust(col_widths[i]) for i, h in enumerate(headers)) + " ║")
         print("╚" + sep.replace("╬", "╩") + "╝")
 
-    def summarize_compatibility(self, table):
-        """Try to infer whether the kernel appears supported based on table content."""
-        if not table or len(table) < 2:
-            return {"compatible": False, "reason": "No compatibility data found"}
+    # === Kesimpulan (summary) singkat ===
+    def summarize_compatibility(self, results):
+        if not results:
+            return {"compatible": False, "reason": "Kernel not found"}
 
-        headers = [h.lower() for h in table[0]]
-        rows = table[1:]
-        # Simple heuristic: check if "status" column mentions active / extended / supported
-        status_idx = None
-        for i, h in enumerate(headers):
-            if "status" in h:
-                status_idx = i
-                break
-
-        compatible = False
-        reason = "Unknown"
-
-        if status_idx is not None:
-            statuses = [r[status_idx].lower() for r in rows]
-            if any("active" in s or "support" in s for s in statuses):
-                compatible = True
-                reason = "Active support found"
-            elif any("end" in s or "deprecated" in s for s in statuses):
-                compatible = False
-                reason = "End of support"
-        else:
-            reason = "No status column detected"
-
-        return {"compatible": compatible, "reason": reason}
+        # Jika salah satu masih Active → dianggap compatible
+        active = any("Active" in r["Compatibility"] or "Active" in r["Support"] for r in results)
+        if active:
+            return {"compatible": True, "reason": "CTE version still active"}
+        return {"compatible": False, "reason": "End of Support"}
