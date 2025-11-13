@@ -2,7 +2,7 @@ import argparse
 import logging
 from core.environment import EnvironmentManager
 from core.repository import RepositoryManager
-from core.compatibility import CompatibilityChecker  # ✅ NEW import
+from core.compatibility_checker import CompatibilityChecker  # ✅ NEW import
 
 # Logging setup
 logging.basicConfig(
