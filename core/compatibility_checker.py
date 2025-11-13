@@ -11,6 +11,9 @@ from core.logger import get_logger
 logger = get_logger(__name__)
 warnings.filterwarnings("ignore", message="Could get FontBBox")
 
+import logging
+logging.getLogger("pdfminer").setLevel(logging.ERROR)
+
 class CompatibilityChecker:
     def __init__(self,
                  json_url="https://packages.vormetric.com/pub/cte_compatibility_matrix.json",
