@@ -174,19 +174,13 @@ class HostInfoCollector:
     def get_database_version(self, db_type):
         try:
             if db_type == "MYSQL":
-                out = run_shell("mysql -V", capture_output=True)
-                match = re.search(r"(\d+\.\d+\.\d+)", out)
-                return match.group(1) if match else "Unknown"
+                return run_shell("mysql -V", capture_output=True) or "Unknown"
 
             if db_type == "POSTGRESQL":
-                out = run_shell("psql --version", capture_output=True)
-                match = re.search(r"PostgreSQL\)\s+(\d+\.\d+)", out)
-                if match:
-                    return match.group(1)
+                return run_shell("psql --version", capture_output=True) or "Unknown"
 
-                # fallback regex
-                match = re.search(r"(\d+\.\d+)", out)
-                return match.group(1) if match else "Unknown"
+            if db_type == "MARIADB":
+                return run_shell("mariadb -V", capture_output=True) or "Unknown"
 
             return "Unknown"
         except:
