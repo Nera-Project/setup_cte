@@ -1,3 +1,4 @@
+# core/encrypt_asset.py
 from core.logger import get_logger
 from utils.command import run_shell
 from pathlib import Path

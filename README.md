@@ -1,10 +1,10 @@
 CTE Registration Tool - README
 
 Usage:
-    python3 main.py --check
-    python3 main.py --install
-    python3 main.py --encrypt
-    python3 main.py --resolve
+    setup.sh --check
+    setup.sh --install
+    setup.sh --encrypt
+    setup.sh --resolve
 
 Steps to prepare:
 1. Ensure python3 installed (>=3.8 recommended).

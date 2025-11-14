@@ -1,3 +1,4 @@
+# core/installer.py
 import os
 import shutil
 import stat

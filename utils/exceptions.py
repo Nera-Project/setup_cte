@@ -1,3 +1,4 @@
+# utils/exceptions.py
 class RepositoryError(Exception):
     pass
 

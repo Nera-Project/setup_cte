@@ -1,3 +1,4 @@
+# utils/parser.py
 from bs4 import BeautifulSoup
 from core.logger import get_logger
 

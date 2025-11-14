@@ -1,3 +1,4 @@
+# core/environment.py
 import logging
 import os
 import sys

@@ -1,3 +1,5 @@
+# /usr/bin/env python3
+# main.py
 import argparse
 import logging
 from core.environment import EnvironmentManager
