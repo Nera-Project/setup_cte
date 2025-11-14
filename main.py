@@ -5,6 +5,7 @@ import logging
 from core.environment import EnvironmentManager
 from core.repository import RepositoryManager
 from core.compatibility_checker import CompatibilityChecker  # ✅ NEW import
+from core.host_info import HostInfoCollector
 
 # Logging setup
 logging.basicConfig(
@@ -56,8 +57,10 @@ def main():
                     logger.warning(f"⚠️  This system might NOT be fully compatible: {summary['reason']}")
             else:
                 logger.warning("Could not determine Thales CTE compatibility automatically.")
-
+            info = HostInfoCollector().collect()
+            HostInfoCollector.print_table(info)
             logger.info("Environment check completed successfully.")
+            
 
         except Exception as e:
             logger.error(f"Error during environment check: {e}")
