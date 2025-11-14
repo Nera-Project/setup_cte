@@ -4,6 +4,7 @@ import socket
 import platform
 import os
 import re
+from utils import config
 from utils.command import run_shell
 from core.logger import get_logger
 
@@ -12,16 +13,37 @@ logger = get_logger(__name__)
 
 class HostInfoCollector:
 
+    # ================================================================
+    # HOSTNAME
+    # ================================================================
     def get_hostname(self):
+        """
+        Hostname harus dari /etc/hosts sesuai kebutuhan CTE.
+        Ambil entri pertama bukan 127.0.0.1
+        """
         try:
-            return socket.gethostname()
-        except Exception:
-            return "Unknown"
+            with open("/etc/hosts") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
 
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        ip, name = parts[0], parts[1]
+                        if ip != "127.0.0.1":
+                            return name
+        except Exception:
+            pass
+
+        return socket.gethostname()
+
+    # ================================================================
+    # IP ADDRESS
+    # ================================================================
     def get_ip_addresses(self):
         """
-        Ambil semua IP yang UP.
-        Tidak termasuk 127.x.x.x
+        Ambil semua IP yang UP (kecuali 127.x.x.x)
         """
         try:
             output = run_shell("ip -4 addr show", capture_output=True)
@@ -31,9 +53,19 @@ class HostInfoCollector:
             logger.error(f"Failed to get IP addresses: {e}")
             return []
 
+    def get_primary_ip(self):
+        """
+        Primary IP = IP pertama yang UP
+        """
+        ips = self.get_ip_addresses()
+        return ips[0] if ips else "Unknown"
+
+    # ================================================================
+    # OS
+    # ================================================================
     def get_os_details(self):
         """
-        Ambil distro + version dari /etc/os-release
+        Ambil OS detail dari /etc/os-release
         """
         try:
             if os.path.exists("/etc/os-release"):
@@ -43,40 +75,44 @@ class HostInfoCollector:
                         if "=" in line:
                             k, _, v = line.partition("=")
                             data[k.strip()] = v.strip().strip('"')
-                pretty = f"{data.get('NAME')} {data.get('VERSION')}"
-                return pretty
+                return f"{data.get('NAME')} {data.get('VERSION')}"
         except Exception:
             pass
+
         return platform.platform()
 
     def get_architecture(self):
         return platform.machine()
 
+    # ================================================================
+    # LDT
+    # ================================================================
     def is_ldt_applicable(self):
         """
-        Sementara simple rule:
-        - Kernel >= 4.x biasanya support LDT secara default.
+        Kernel >= 4.x dianggap compatible.
         """
         try:
             kernel = platform.release()
             major = int(kernel.split('.')[0])
-            return "Yes" if major >= 4 else "Maybe"
+            return "Yes" if major >= 4 else "No"
         except Exception:
             return "Unknown"
 
+    # ================================================================
+    # ROOT PRIVILEGE
+    # ================================================================
     def is_root(self):
         try:
             return "Yes" if os.geteuid() == 0 else "No"
         except Exception:
             return "Unknown"
 
-    # ============================================================
-    # FIXED: cek port 443 menggunakan socket (lebih aman & stabil)
-    # ============================================================
+    # ================================================================
+    # PORT 443 CHECK (socket)
+    # ================================================================
     def is_port_443_open_to_cm(self, cm_host):
         """
-        Cek konektivitas TCP ke CM host (domain/IP) port 443.
-        Menggunakan socket, aman dan tidak bergantung shell/bash.
+        Cek port 443 via socket.connect_ex
         """
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -88,56 +124,115 @@ class HostInfoCollector:
             logger.error(f"Port check error for {cm_host}: {e}")
             return "No"
 
+    # ================================================================
+    # USER LIST
+    # ================================================================
     def get_users(self):
-        """
-        Ambil user dari /etc/passwd (system + normal).
-        """
         users = []
         try:
             with open("/etc/passwd") as f:
                 for line in f:
-                    name = line.split(":")[0]
-                    users.append(name)
+                    users.append(line.split(":")[0])
         except Exception:
             pass
         return users
 
-    def collect(self, cm_domain="example.com"):
-        """
-        Collect seluruh informasi host.
-        """
+    # ================================================================
+    # DATABASE DETECTION
+    # ================================================================
+    def detect_database(self):
+        try:
+            services = run_shell(
+                "systemctl list-units --type=service --state=running",
+                capture_output=True
+            )
+
+            # MySQL / MariaDB
+            if ("mysqld.service" in services or 
+                "mariadb.service" in services or 
+                "mysqld" in services):
+                return "MYSQL"
+
+            # PostgreSQL
+            if "postgresql" in services or "postgres.service" in services:
+                return "POSTGRESQL"
+
+            # Process check fallback
+            ps = run_shell("ps aux", capture_output=True)
+            if "mysqld" in ps:
+                return "MYSQL"
+            if "postgres" in ps:
+                return "POSTGRESQL"
+
+            return "Unknown"
+        except:
+            return "Unknown"
+
+    # ================================================================
+    # DATABASE VERSION
+    # ================================================================
+    def get_database_version(self, db_type):
+        try:
+            if db_type == "MYSQL":
+                out = run_shell("mysql -V", capture_output=True)
+                match = re.search(r"(\d+\.\d+\.\d+)", out)
+                return match.group(1) if match else "Unknown"
+
+            if db_type == "POSTGRESQL":
+                out = run_shell("psql --version", capture_output=True)
+                match = re.search(r"(\d+\.\d+\.\d+)", out)
+                return match.group(1) if match else "Unknown"
+
+            return "Unknown"
+        except:
+            return "Unknown"
+
+    # ================================================================
+    # MASTER COLLECT FUNCTION
+    # ================================================================
+    def collect(self, cm_domain=config.CTVL_IP, directory_for_encryption="/data"):
         logger.info("Collecting host information...")
+
+        db_type = self.detect_database()
+        db_version = self.get_database_version(db_type)
 
         info = {
             "Hostname": self.get_hostname(),
-            "IP Addresses": ", ".join(self.get_ip_addresses()),
-            "Operating System": self.get_os_details(),
+            "Host IP address": self.get_primary_ip(),
+            "Operating System Details": self.get_os_details(),
             "Architecture": self.get_architecture(),
-            "LDT Applicable": self.is_ldt_applicable(),
-            "Is Root": self.is_root(),
-            "Port 443 to CM": self.is_port_443_open_to_cm(cm_domain),
-            "OS Users": ", ".join(self.get_users()),
+            "Admin/Root access available": self.is_root(),
+            "Is Port 443 Enabled between Host and CM?": self.is_port_443_open_to_cm(cm_domain),
+            "User on OS": ", ".join(self.get_users()),
+            "Directory path for Encryption": directory_for_encryption,
+            "is LDT applicable": self.is_ldt_applicable(),
+            "Database Type": db_type,
+            "Database Version": db_version,
         }
 
         return info
 
+    # ================================================================
+    # PRINT TABLE
+    # ================================================================
     @staticmethod
     def print_table(info):
-        """
-        Print tabel seperti compatibility checker.
-        """
         headers = ["Key", "Value"]
         rows = [{"Key": k, "Value": v} for k, v in info.items()]
 
         col_widths = [
-            max(len(row[h]) for row in rows + [{h: h}]) for h in headers
+            max(len(str(row[h])) for row in rows + [{h: h}]) for h in headers
         ]
 
         sep = "╬".join("═" * (w + 2) for w in col_widths)
 
         print("╔" + sep.replace("╬", "╦") + "╗")
-        print("║ " + " ║ ".join(headers[i].ljust(col_widths[i]) for i in range(2)) + " ║")
+        print("║ " + " ║ ".join(headers[i].ljust(col_widths[i]) 
+                                for i in range(2)) + " ║")
         print("╠" + sep.replace("╬", "╬") + "╣")
+
         for r in rows:
-            print("║ " + r["Key"].ljust(col_widths[0]) + " ║ " + r["Value"].ljust(col_widths[1]) + " ║")
+            print("║ " + r["Key"].ljust(col_widths[0]) +
+                  " ║ " + str(r["Value"]).ljust(col_widths[1]) + " ║")
+
         print("╚" + sep.replace("╬", "╩") + "╝")
