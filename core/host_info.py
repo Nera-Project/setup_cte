@@ -197,10 +197,10 @@ class HostInfoCollector:
         db_info = detector.detect_all()
         DatabaseDetector.print_table(db_info)
 
-        db_types = ", ".join(set(d["Engine"] for d in db_info))
-        db_versions = {d["Engine"]: [] for d in db_info}
+        db_types = ", ".join(set(d["Database Engine"] for d in db_info))
+        db_versions = {d["Database Engine"]: [] for d in db_info}
         for d in db_info:
-            db_versions[d["Engine"]].append(d["Version"])
+            db_versions[d["Database Engine"]].append(d["Version"])
 
         info = {
             "Hostname": self.get_hostname(),
