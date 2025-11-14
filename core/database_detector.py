@@ -1,4 +1,3 @@
-# core/database_detector.py
 import re
 import os
 from utils.command import run_shell
@@ -9,21 +8,29 @@ logger = get_logger(__name__)
 
 class DatabaseDetector:
 
-    MYSQL_BINARIES = ["mysqld", "mariadbd"]
+    MYSQL_BINARIES = ["mysqld"]
+    MARIADB_BINARIES = ["mariadbd"]
     POSTGRES_BINARIES = ["postgres"]
+    ORACLE_BINARIES = ["tnslsnr"]
+    MONGODB_BINARIES = ["mongod"]
+    REDIS_BINARIES = ["redis-server"]
+    MSSQL_BINARIES = ["sqlservr"]
 
     def __init__(self):
         self.databases = []
 
+    # =====================================================
+    # Safe shell runner
+    # =====================================================
     def safe_run(self, cmd):
         try:
-            return run_shell(cmd, capture_output=True)
+            return run_shell(cmd, capture_output=True).strip()
         except:
             return ""
 
-    # ==========================
+    # =====================================================
     # PORT LISTENING
-    # ==========================
+    # =====================================================
     def get_listening_ports(self):
         output = self.safe_run("ss -ltnp 2>/dev/null")
         results = []
@@ -36,108 +43,253 @@ class DatabaseDetector:
 
         return results
 
-    # ==========================
-    # SERVICE / STARTUP DETECTOR
-    # ==========================
-    def detect_startup_method(self, service_name, pid):
-        # Check systemd
-        svc = self.safe_run(f"systemctl is-active {service_name}")
-        if "active" in svc:
-            return "systemd"
-
-        # Postgres sometimes uses postgresql-XX
-        if "postgres" in service_name:
-            pg_services = self.safe_run("systemctl list-units --type=service --no-pager | grep postgres")
-            if pg_services:
+    # =====================================================
+    # DETECT STARTUP METHOD
+    # =====================================================
+    def detect_startup_method(self, service_hint, pid):
+        # Try systemd service names
+        if service_hint:
+            svc = self.safe_run(f"systemctl is-active {service_hint}")
+            if "active" in svc:
                 return "systemd"
 
-        # Check init.d
-        if os.path.exists(f"/etc/init.d/{service_name}"):
+        # Try generic
+        svc_list = self.safe_run("systemctl list-units --type=service --no-pager")
+        if "postgres" in svc_list:
+            return "systemd"
+
+        # init.d
+        if os.path.exists(f"/etc/init.d/{service_hint}"):
             return "init-script"
 
-        # Check docker
-        cgroup = self.safe_run(f"cat /proc/{pid}/cgroup")
-        if "docker" in cgroup or "containerd" in cgroup:
+        # container?
+        cg = self.safe_run(f"cat /proc/{pid}/cgroup")
+        if any(x in cg for x in ["docker", "containerd", "kubepods"]):
             return "docker"
 
-        # Default fallback = manual startup
+        # fallback
         return "manual"
 
-    # ==========================
-    # MySQL Detection
-    # ==========================
+    # =====================================================
+    # HELPER FOR ADDING RESULT WITHOUT DUPLICATE
+    # =====================================================
+    def add_db_unique(self, db_list, new_item):
+        signature = f"{new_item['Database Engine']}|{new_item['Port']}"
+
+        for item in db_list:
+            sig2 = f"{item['Database Engine']}|{item['Port']}"
+            if sig2 == signature:
+                return  # skip duplicate
+
+        db_list.append(new_item)
+
+    # =====================================================
+    # MYSQL
+    # =====================================================
     def detect_mysql(self, processes, ports):
         db_list = []
 
         for p in processes:
-            pid = p["pid"]
-            name = p["cmd"]
+            pid, cmd = p["pid"], p["cmd"]
 
-            if name not in self.MYSQL_BINARIES:
+            if cmd not in self.MYSQL_BINARIES:
                 continue
 
-            matching_ports = [x["port"] for x in ports if x["pid"] == pid] or ["Unknown"]
-            version = self.safe_run(f"{name} --version") or "Unknown"
+            matched_ports = [x["port"] for x in ports if x["pid"] == pid] or ["Unknown"]
+            version = self.safe_run("mysqld --version") or "Unknown"
 
             startup = self.detect_startup_method("mysqld", pid)
 
-            db_list.append({
+            self.add_db_unique(db_list, {
                 "Database Engine": "MYSQL",
-                "Version": version.strip(),
-                "Port": ", ".join(matching_ports),
-                "Service": name,
+                "Version": version,
+                "Port": ", ".join(matched_ports),
+                "Service": cmd,
                 "Running": "Yes",
                 "Startup Method": startup
             })
 
         return db_list
 
-    # ==========================
-    # PostgreSQL Detection
-    # ==========================
-    def detect_postgresql():
-        results = []
+    # =====================================================
+    # MARIADB
+    # =====================================================
+    def detect_mariadb(self, processes, ports):
+        db_list = []
 
-        # 1. Detect version
-        version_cmd = run_cmd("psql --version")
-        if not version_cmd:
-            return results
+        for p in processes:
+            pid, cmd = p["pid"], p["cmd"]
 
-        version = version_cmd.strip()
+            if cmd not in self.MARIADB_BINARIES:
+                continue
 
-        # 2. Detect service (systemd)
-        service_status = run_cmd("systemctl is-active postgresql || systemctl is-active postgresql.service || systemctl is-active postgres")
-        service_name = "postgresql" if "active" in service_status else "Unknown"
+            matched_ports = [x["port"] for x in ports if x["pid"] == pid] or ["Unknown"]
+            version = self.safe_run("mariadbd --version") or "Unknown"
 
-        # 3. Detect ports
-        ports = run_cmd("ss -ltnp | grep postgres | awk '{print $4}' | awk -F':' '{print $NF}'")
-        ports = list(sorted(set([p.strip() for p in ports.splitlines() if p.strip().isdigit()])))
+            startup = self.detect_startup_method("mariadb", pid)
 
-        if not ports:
-            ports = ["Unknown"]
+            self.add_db_unique(db_list, {
+                "Database Engine": "MARIADB",
+                "Version": version,
+                "Port": ", ".join(matched_ports),
+                "Service": cmd,
+                "Running": "Yes",
+                "Startup Method": startup
+            })
 
-        # 4. Startup method
-        if "active" in service_status:
-            startup = "systemd"
-        else:
-            startup = "manual"
+        return db_list
 
-        # 5. Append only once
-        results.append({
-            "Engine": "POSTGRESQL",
-            "Version": version,
-            "Port": ", ".join(ports),
-            "Service": service_name,
-            "Running": "Yes" if ports else "No",
-            "Startup": startup
-        })
+    # =====================================================
+    # POSTGRESQL
+    # =====================================================
+    def detect_postgres(self, processes, ports):
+        db_list = []
 
-        return results
+        # avoid multiple postmaster forks showing as instances
+        seen_pids = set()
 
+        for p in processes:
+            pid, cmd = p["pid"], p["cmd"]
 
-    # ==========================
-    # DETECT ALL
-    # ==========================
+            if cmd not in self.POSTGRES_BINARIES:
+                continue
+            if pid in seen_pids:
+                continue
+
+            seen_pids.add(pid)
+
+            matched_ports = [x["port"] for x in ports if x["pid"] == pid] or ["5432"]
+            version = self.safe_run("psql --version") or "Unknown"
+
+            startup = self.detect_startup_method("postgresql", pid)
+
+            self.add_db_unique(db_list, {
+                "Database Engine": "POSTGRESQL",
+                "Version": version,
+                "Port": ", ".join(matched_ports),
+                "Service": cmd,
+                "Running": "Yes",
+                "Startup Method": startup
+            })
+
+        return db_list
+
+    # =====================================================
+    # ORACLE DB
+    # =====================================================
+    def detect_oracle(self, processes, ports):
+        db_list = []
+
+        for p in processes:
+            pid, cmd = p["pid"], p["cmd"]
+
+            if cmd not in self.ORACLE_BINARIES:
+                continue
+
+            matched_ports = [x["port"] for x in ports if x["pid"] == pid] or ["1521"]
+
+            version = self.safe_run("sqlplus -v") or "Unknown"
+
+            startup = self.detect_startup_method("oracle", pid)
+
+            self.add_db_unique(db_list, {
+                "Database Engine": "ORACLE",
+                "Version": version,
+                "Port": ", ".join(matched_ports),
+                "Service": cmd,
+                "Running": "Yes",
+                "Startup Method": startup
+            })
+
+        return db_list
+
+    # =====================================================
+    # MONGODB
+    # =====================================================
+    def detect_mongodb(self, processes, ports):
+        db_list = []
+
+        for p in processes:
+            pid, cmd = p["pid"], p["cmd"]
+
+            if cmd not in self.MONGODB_BINARIES:
+                continue
+
+            matched_ports = [x["port"] for x in ports if x["pid"] == pid] or ["27017"]
+            version = self.safe_run("mongod --version | head -n 1") or "Unknown"
+
+            startup = self.detect_startup_method("mongod", pid)
+
+            self.add_db_unique(db_list, {
+                "Database Engine": "MONGODB",
+                "Version": version,
+                "Port": ", ".join(matched_ports),
+                "Service": cmd,
+                "Running": "Yes",
+                "Startup Method": startup
+            })
+
+        return db_list
+
+    # =====================================================
+    # REDIS
+    # =====================================================
+    def detect_redis(self, processes, ports):
+        db_list = []
+
+        for p in processes:
+            pid, cmd = p["pid"], p["cmd"]
+
+            if cmd not in self.REDIS_BINARIES:
+                continue
+
+            matched_ports = [x["port"] for x in ports if x["pid"] == pid] or ["6379"]
+            version = self.safe_run("redis-server --version") or "Unknown"
+
+            startup = self.detect_startup_method("redis", pid)
+
+            self.add_db_unique(db_list, {
+                "Database Engine": "REDIS",
+                "Version": version,
+                "Port": ", ".join(matched_ports),
+                "Service": cmd,
+                "Running": "Yes",
+                "Startup Method": startup
+            })
+
+        return db_list
+
+    # =====================================================
+    # MSSQL
+    # =====================================================
+    def detect_mssql(self, processes, ports):
+        db_list = []
+
+        for p in processes:
+            pid, cmd = p["pid"], p["cmd"]
+
+            if cmd not in self.MSSQL_BINARIES:
+                continue
+
+            matched_ports = [x["port"] for x in ports if x["pid"] == pid] or ["1433"]
+            version = self.safe_run("/opt/mssql/bin/sqlservr --version 2>/dev/null") or "Unknown"
+
+            startup = self.detect_startup_method("mssql-server", pid)
+
+            self.add_db_unique(db_list, {
+                "Database Engine": "MSSQL",
+                "Version": version,
+                "Port": ", ".join(matched_ports),
+                "Service": cmd,
+                "Running": "Yes",
+                "Startup Method": startup
+            })
+
+        return db_list
+
+    # =====================================================
+    # DETECT ALL DATABASES
+    # =====================================================
     def detect_all(self):
         ps_out = self.safe_run("ps -eo pid,comm")
         processes = []
@@ -150,15 +302,20 @@ class DatabaseDetector:
         ports = self.get_listening_ports()
         result = []
 
-        result.extend(self.detect_mysql(processes, ports))
-        result.extend(self.detect_postgres(processes, ports))
+        result += self.detect_mysql(processes, ports)
+        result += self.detect_mariadb(processes, ports)
+        result += self.detect_postgres(processes, ports)
+        result += self.detect_oracle(processes, ports)
+        result += self.detect_mongodb(processes, ports)
+        result += self.detect_redis(processes, ports)
+        result += self.detect_mssql(processes, ports)
 
         self.databases = result
         return result
 
-    # ==========================
-    # TABLE OUTPUT
-    # ==========================
+    # =====================================================
+    # PRINT TABLE
+    # =====================================================
     @staticmethod
     def print_table(databases):
         if not databases:
@@ -167,6 +324,7 @@ class DatabaseDetector:
 
         headers = ["Database Engine", "Version", "Port", "Service", "Running", "Startup Method"]
 
+        # calc column widths
         col_widths = [
             max(len(str(row.get(h, ""))) for row in databases + [{h: h}])
             for h in headers
