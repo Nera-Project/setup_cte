@@ -4,18 +4,18 @@ import socket
 import platform
 import os
 import re
-import subprocess
 from utils.command import run_shell
 from core.logger import get_logger
 
 logger = get_logger(__name__)
+
 
 class HostInfoCollector:
 
     def get_hostname(self):
         try:
             return socket.gethostname()
-        except:
+        except Exception:
             return "Unknown"
 
     def get_ip_addresses(self):
@@ -40,11 +40,12 @@ class HostInfoCollector:
                 data = {}
                 with open("/etc/os-release") as f:
                     for line in f:
-                        k, _, v = line.partition("=")
-                        data[k.strip()] = v.strip().strip('"')
+                        if "=" in line:
+                            k, _, v = line.partition("=")
+                            data[k.strip()] = v.strip().strip('"')
                 pretty = f"{data.get('NAME')} {data.get('VERSION')}"
                 return pretty
-        except:
+        except Exception:
             pass
         return platform.platform()
 
@@ -56,20 +57,36 @@ class HostInfoCollector:
         Sementara simple rule:
         - Kernel >= 4.x biasanya support LDT secara default.
         """
-        kernel = platform.release()
-        major = int(kernel.split('.')[0])
-        return "Yes" if major >= 4 else "Maybe"
+        try:
+            kernel = platform.release()
+            major = int(kernel.split('.')[0])
+            return "Yes" if major >= 4 else "Maybe"
+        except Exception:
+            return "Unknown"
 
     def is_root(self):
-        return "Yes" if os.geteuid() == 0 else "No"
+        try:
+            return "Yes" if os.geteuid() == 0 else "No"
+        except Exception:
+            return "Unknown"
 
-    def is_port_443_open_to_cm(self, cm_domain):
+    # ============================================================
+    # FIXED: cek port 443 menggunakan socket (lebih aman & stabil)
+    # ============================================================
+    def is_port_443_open_to_cm(self, cm_host):
         """
-        Test TCP ke CM domain:443 menggunakan bash.
+        Cek konektivitas TCP ke CM host (domain/IP) port 443.
+        Menggunakan socket, aman dan tidak bergantung shell/bash.
         """
-        cmd = f"timeout 3 bash -c '</dev/tcp/{cm_domain}/443' 2>/dev/null && echo OK || echo FAIL'"
-        result = run_shell(cmd, capture_output=True)
-        return "Yes" if result == "OK" else "No"
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(3)
+            result = sock.connect_ex((cm_host, 443))
+            sock.close()
+            return "Yes" if result == 0 else "No"
+        except Exception as e:
+            logger.error(f"Port check error for {cm_host}: {e}")
+            return "No"
 
     def get_users(self):
         """
@@ -81,7 +98,7 @@ class HostInfoCollector:
                 for line in f:
                     name = line.split(":")[0]
                     users.append(name)
-        except:
+        except Exception:
             pass
         return users
 
