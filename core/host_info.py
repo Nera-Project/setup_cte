@@ -180,7 +180,12 @@ class HostInfoCollector:
 
             if db_type == "POSTGRESQL":
                 out = run_shell("psql --version", capture_output=True)
-                match = re.search(r"(\d+\.\d+\.\d+)", out)
+                match = re.search(r"PostgreSQL\)\s+(\d+\.\d+)", out)
+                if match:
+                    return match.group(1)
+
+                # fallback regex
+                match = re.search(r"(\d+\.\d+)", out)
                 return match.group(1) if match else "Unknown"
 
             return "Unknown"
