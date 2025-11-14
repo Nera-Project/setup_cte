@@ -7,6 +7,7 @@ import re
 from utils import config
 from utils.command import run_shell
 from core.logger import get_logger
+from core.database_detector import DatabaseDetector
 
 logger = get_logger(__name__)
 
@@ -137,63 +138,69 @@ class HostInfoCollector:
             pass
         return users
 
-    # ================================================================
-    # DATABASE DETECTION
-    # ================================================================
-    def detect_database(self):
-        try:
-            services = run_shell(
-                "systemctl list-units --type=service --state=running",
-                capture_output=True
-            )
+    # # ================================================================
+    # # DATABASE DETECTION
+    # # ================================================================
+    # def detect_database(self):
+    #     try:
+    #         services = run_shell(
+    #             "systemctl list-units --type=service --state=running",
+    #             capture_output=True
+    #         )
 
-            # MySQL / MariaDB
-            if ("mysqld.service" in services or 
-                "mariadb.service" in services or 
-                "mysqld" in services):
-                return "MYSQL"
+    #         # MySQL / MariaDB
+    #         if ("mysqld.service" in services or 
+    #             "mariadb.service" in services or 
+    #             "mysqld" in services):
+    #             return "MYSQL"
 
-            # PostgreSQL
-            if "postgresql" in services or "postgres.service" in services:
-                return "POSTGRESQL"
+    #         # PostgreSQL
+    #         if "postgresql" in services or "postgres.service" in services:
+    #             return "POSTGRESQL"
 
-            # Process check fallback
-            ps = run_shell("ps aux", capture_output=True)
-            if "mysqld" in ps:
-                return "MYSQL"
-            if "postgres" in ps:
-                return "POSTGRESQL"
+    #         # Process check fallback
+    #         ps = run_shell("ps aux", capture_output=True)
+    #         if "mysqld" in ps:
+    #             return "MYSQL"
+    #         if "postgres" in ps:
+    #             return "POSTGRESQL"
 
-            return "Unknown"
-        except:
-            return "Unknown"
+    #         return "Unknown"
+    #     except:
+    #         return "Unknown"
 
-    # ================================================================
-    # DATABASE VERSION
-    # ================================================================
-    def get_database_version(self, db_type):
-        try:
-            if db_type == "MYSQL":
-                return run_shell("mysql -V", capture_output=True) or "Unknown"
+    # # ================================================================
+    # # DATABASE VERSION
+    # # ================================================================
+    # def get_database_version(self, db_type):
+    #     try:
+    #         if db_type == "MYSQL":
+    #             return run_shell("mysql -V", capture_output=True) or "Unknown"
 
-            if db_type == "POSTGRESQL":
-                return run_shell("psql --version", capture_output=True) or "Unknown"
+    #         if db_type == "POSTGRESQL":
+    #             return run_shell("psql --version", capture_output=True) or "Unknown"
 
-            if db_type == "MARIADB":
-                return run_shell("mariadb -V", capture_output=True) or "Unknown"
+    #         if db_type == "MARIADB":
+    #             return run_shell("mariadb -V", capture_output=True) or "Unknown"
 
-            return "Unknown"
-        except:
-            return "Unknown"
+    #         return "Unknown"
+    #     except:
+    #         return "Unknown"
 
     # ================================================================
     # MASTER COLLECT FUNCTION
     # ================================================================
     def collect(self, cm_domain=config.CTVL_IP, directory_for_encryption="/data"):
         logger.info("Collecting host information...")
+    
+        detector = DatabaseDetector()
+        db_info = detector.detect_all()
+        DatabaseDetector.print_table(db_info)
 
-        db_type = self.detect_database()
-        db_version = self.get_database_version(db_type)
+        db_types = ", ".join(set(d["Engine"] for d in db_info))
+        db_versions = {d["Engine"]: [] for d in db_info}
+        for d in db_info:
+            db_versions[d["Engine"]].append(d["Version"])
 
         info = {
             "Hostname": self.get_hostname(),
@@ -205,8 +212,8 @@ class HostInfoCollector:
             "User on OS": ", ".join(self.get_users()),
             "Directory path for Encryption": directory_for_encryption,
             "is LDT applicable": self.is_ldt_applicable(),
-            "Database Type": db_type,
-            "Database Version": db_version,
+            "Database Type": db_types,
+            "Database Version": ", ".join(f"{k}: {', '.join(v)}" for k,v in db_versions.items()),
         }
 
         return info
