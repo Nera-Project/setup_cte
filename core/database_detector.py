@@ -13,6 +13,7 @@ class DatabaseDetector:
     def __init__(self):
         self.databases = []
 
+
     # ==========================
     # SAFE run (no exception)
     # ==========================
@@ -22,6 +23,7 @@ class DatabaseDetector:
         except:
             return ""
 
+
     # ==========================
     # GET ALL LISTENING PORTS
     # ==========================
@@ -30,12 +32,16 @@ class DatabaseDetector:
         results = []
 
         for line in output.splitlines():
-            m = re.search(r"LISTEN\s+\d+\s+\d+\s+.*:(\d+)\s+.*pid=(\d+),fd=\d+\)", line)
+            m = re.search(
+                r"LISTEN\s+\d+\s+\d+\s+.*:(\d+)\s+.*pid=(\d+),fd=\d+\)",
+                line
+            )
             if m:
                 port, pid = m.groups()
                 results.append({"port": port, "pid": pid, "raw": line})
 
         return results
+
 
     # ==========================
     # Detect MySQL / MariaDB
@@ -55,13 +61,11 @@ class DatabaseDetector:
             if not matching_ports:
                 matching_ports = ["Unknown"]
 
-            version = self.safe_run(f"{name} --version")
-            if not version:
-                version = "Unknown"
+            version = self.safe_run(f"{name} --version").strip() or "Unknown"
 
             db_list.append({
                 "Database Engine": "MYSQL",
-                "Version": version.strip(),
+                "Version": version,
                 "Port": ", ".join(matching_ports),
                 "Service": name,
                 "Running": "Yes"
@@ -69,37 +73,43 @@ class DatabaseDetector:
 
         return db_list
 
+
     # ==========================
-    # Detect PostgreSQL
+    # Detect PostgreSQL (FIXED)
     # ==========================
     def detect_postgres(self, processes, ports):
         db_list = []
 
-        for p in processes:
-            pid = p["pid"]
-            name = p["cmd"]
+        # all postgres pids
+        postgres_pids = {p["pid"] for p in processes if p["cmd"] == "postgres"}
 
-            if name not in self.POSTGRES_BINARIES:
-                continue
+        if not postgres_pids:
+            return []
 
-            # Find ports for this PID
-            matching_ports = [x["port"] for x in ports if x["pid"] == pid]
-            if not matching_ports:
-                matching_ports = ["Unknown"]
+        # only postgres with ports
+        postgres_with_ports = [p for p in ports if p["pid"] in postgres_pids]
 
-            version = self.safe_run("psql --version")
-            if not version:
-                version = "Unknown"
+        if not postgres_with_ports:
+            # no port, still show postgres but with Unknown port
+            main_pid = list(postgres_pids)[0]
+            ports_list = ["Unknown"]
+        else:
+            # choose the main PID (usually master)
+            main_pid = postgres_with_ports[0]["pid"]
+            ports_list = [p["port"] for p in postgres_with_ports if p["pid"] == main_pid]
 
-            db_list.append({
-                "Database Engine": "POSTGRESQL",
-                "Version": version.strip(),
-                "Port": ", ".join(matching_ports),
-                "Service": name,
-                "Running": "Yes"
-            })
+        version = self.safe_run("psql --version").strip() or "Unknown"
+
+        db_list.append({
+            "Database Engine": "POSTGRESQL",
+            "Version": version,
+            "Port": ", ".join(ports_list),
+            "Service": "postgres",
+            "Running": "Yes"
+        })
 
         return db_list
+
 
     # ==========================
     # Detect All DB
@@ -129,6 +139,7 @@ class DatabaseDetector:
         self.databases = result
         return result
 
+
     # ==========================
     # Print Table
     # ==========================
@@ -148,11 +159,13 @@ class DatabaseDetector:
         sep = "╬".join("═" * (w + 2) for w in col_widths)
 
         print("╔" + sep.replace("╬", "╦") + "╗")
-        print("║ " + " ║ ".join(headers[i].ljust(col_widths[i]) for i in range(5)) + " ║")
+        print("║ " + " ║ ".join(headers[i].ljust(col_widths[i]) for i in range(len(headers))) + " ║")
         print("╠" + sep.replace("╬", "╬") + "╣")
 
         for row in databases:
-            print("║ " + " ║ ".join(row[h].ljust(col_widths[i])
-                for i, h in enumerate(headers)) + " ║")
+            print("║ " + " ║ ".join(
+                str(row[h]).ljust(col_widths[i])
+                for i, h in enumerate(headers)
+            ) + " ║")
 
         print("╚" + sep.replace("╬", "╩") + "╝")
