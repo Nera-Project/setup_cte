@@ -1,9 +1,11 @@
 # core/database_detector.py
 import re
+import os
 from utils.command import run_shell
 from core.logger import get_logger
 
 logger = get_logger(__name__)
+
 
 class DatabaseDetector:
 
@@ -13,38 +15,56 @@ class DatabaseDetector:
     def __init__(self):
         self.databases = []
 
-
-    # ==========================
-    # SAFE run (no exception)
-    # ==========================
     def safe_run(self, cmd):
         try:
             return run_shell(cmd, capture_output=True)
         except:
             return ""
 
-
     # ==========================
-    # GET ALL LISTENING PORTS
+    # PORT LISTENING
     # ==========================
     def get_listening_ports(self):
         output = self.safe_run("ss -ltnp 2>/dev/null")
         results = []
 
         for line in output.splitlines():
-            m = re.search(
-                r"LISTEN\s+\d+\s+\d+\s+.*:(\d+)\s+.*pid=(\d+),fd=\d+\)",
-                line
-            )
+            m = re.search(r"LISTEN\s+\d+\s+\d+\s+.*:(\d+)\s+.*pid=(\d+)", line)
             if m:
                 port, pid = m.groups()
-                results.append({"port": port, "pid": pid, "raw": line})
+                results.append({"port": port, "pid": pid})
 
         return results
 
+    # ==========================
+    # SERVICE / STARTUP DETECTOR
+    # ==========================
+    def detect_startup_method(self, service_name, pid):
+        # Check systemd
+        svc = self.safe_run(f"systemctl is-active {service_name}")
+        if "active" in svc:
+            return "systemd"
+
+        # Postgres sometimes uses postgresql-XX
+        if "postgres" in service_name:
+            pg_services = self.safe_run("systemctl list-units --type=service --no-pager | grep postgres")
+            if pg_services:
+                return "systemd"
+
+        # Check init.d
+        if os.path.exists(f"/etc/init.d/{service_name}"):
+            return "init-script"
+
+        # Check docker
+        cgroup = self.safe_run(f"cat /proc/{pid}/cgroup")
+        if "docker" in cgroup or "containerd" in cgroup:
+            return "docker"
+
+        # Default fallback = manual startup
+        return "manual"
 
     # ==========================
-    # Detect MySQL / MariaDB
+    # MySQL Detection
     # ==========================
     def detect_mysql(self, processes, ports):
         db_list = []
@@ -56,92 +76,74 @@ class DatabaseDetector:
             if name not in self.MYSQL_BINARIES:
                 continue
 
-            # Find ports for this PID
-            matching_ports = [x["port"] for x in ports if x["pid"] == pid]
-            if not matching_ports:
-                matching_ports = ["Unknown"]
+            matching_ports = [x["port"] for x in ports if x["pid"] == pid] or ["Unknown"]
+            version = self.safe_run(f"{name} --version") or "Unknown"
 
-            version = self.safe_run(f"{name} --version").strip() or "Unknown"
+            startup = self.detect_startup_method("mysqld", pid)
 
             db_list.append({
                 "Database Engine": "MYSQL",
-                "Version": version,
+                "Version": version.strip(),
                 "Port": ", ".join(matching_ports),
                 "Service": name,
-                "Running": "Yes"
+                "Running": "Yes",
+                "Startup Method": startup
             })
 
         return db_list
 
-
     # ==========================
-    # Detect PostgreSQL (FIXED)
+    # PostgreSQL Detection
     # ==========================
     def detect_postgres(self, processes, ports):
         db_list = []
 
-        # all postgres pids
-        postgres_pids = {p["pid"] for p in processes if p["cmd"] == "postgres"}
+        for p in processes:
+            pid = p["pid"]
+            name = p["cmd"]
 
-        if not postgres_pids:
-            return []
+            if name not in self.POSTGRES_BINARIES:
+                continue
 
-        # only postgres with ports
-        postgres_with_ports = [p for p in ports if p["pid"] in postgres_pids]
+            matching_ports = [x["port"] for x in ports if x["pid"] == pid] or ["Unknown"]
+            version = self.safe_run("psql --version") or "Unknown"
 
-        if not postgres_with_ports:
-            # no port, still show postgres but with Unknown port
-            main_pid = list(postgres_pids)[0]
-            ports_list = ["Unknown"]
-        else:
-            # choose the main PID (usually master)
-            main_pid = postgres_with_ports[0]["pid"]
-            ports_list = [p["port"] for p in postgres_with_ports if p["pid"] == main_pid]
+            startup = self.detect_startup_method("postgresql", pid)
 
-        version = self.safe_run("psql --version").strip() or "Unknown"
-
-        db_list.append({
-            "Database Engine": "POSTGRESQL",
-            "Version": version,
-            "Port": ", ".join(ports_list),
-            "Service": "postgres",
-            "Running": "Yes"
-        })
+            db_list.append({
+                "Database Engine": "POSTGRESQL",
+                "Version": version.strip(),
+                "Port": ", ".join(matching_ports),
+                "Service": name,
+                "Running": "Yes",
+                "Startup Method": startup
+            })
 
         return db_list
 
-
     # ==========================
-    # Detect All DB
+    # DETECT ALL
     # ==========================
     def detect_all(self):
-        # Get running processes
         ps_out = self.safe_run("ps -eo pid,comm")
         processes = []
 
         for line in ps_out.splitlines()[1:]:
             parts = line.strip().split()
-            if len(parts) < 2:
-                continue
-            processes.append({
-                "pid": parts[0],
-                "cmd": parts[1]
-            })
+            if len(parts) >= 2:
+                processes.append({"pid": parts[0], "cmd": parts[1]})
 
-        # Get ports
         ports = self.get_listening_ports()
-
-        # Detect DBs
         result = []
+
         result.extend(self.detect_mysql(processes, ports))
         result.extend(self.detect_postgres(processes, ports))
 
         self.databases = result
         return result
 
-
     # ==========================
-    # Print Table
+    # TABLE OUTPUT
     # ==========================
     @staticmethod
     def print_table(databases):
@@ -149,10 +151,10 @@ class DatabaseDetector:
             print("\nNo running database instances detected.\n")
             return
 
-        headers = ["Database Engine", "Version", "Port", "Service", "Running"]
+        headers = ["Database Engine", "Version", "Port", "Service", "Running", "Startup Method"]
 
         col_widths = [
-            max(len(str(row[h])) for row in databases + [{h: h}])
+            max(len(str(row.get(h, ""))) for row in databases + [{h: h}])
             for h in headers
         ]
 
@@ -163,9 +165,7 @@ class DatabaseDetector:
         print("╠" + sep.replace("╬", "╬") + "╣")
 
         for row in databases:
-            print("║ " + " ║ ".join(
-                str(row[h]).ljust(col_widths[i])
-                for i, h in enumerate(headers)
-            ) + " ║")
+            print("║ " + " ║ ".join(str(row.get(h, "")).ljust(col_widths[i])
+                for i, h in enumerate(headers)) + " ║")
 
         print("╚" + sep.replace("╬", "╩") + "╝")
