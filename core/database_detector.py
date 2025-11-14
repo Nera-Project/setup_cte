@@ -95,31 +95,45 @@ class DatabaseDetector:
     # ==========================
     # PostgreSQL Detection
     # ==========================
-    def detect_postgres(self, processes, ports):
-        db_list = []
+    def detect_postgresql():
+        results = []
 
-        for p in processes:
-            pid = p["pid"]
-            name = p["cmd"]
+        # 1. Detect version
+        version_cmd = run_cmd("psql --version")
+        if not version_cmd:
+            return results
 
-            if name not in self.POSTGRES_BINARIES:
-                continue
+        version = version_cmd.strip()
 
-            matching_ports = [x["port"] for x in ports if x["pid"] == pid] or ["Unknown"]
-            version = self.safe_run("psql --version") or "Unknown"
+        # 2. Detect service (systemd)
+        service_status = run_cmd("systemctl is-active postgresql || systemctl is-active postgresql.service || systemctl is-active postgres")
+        service_name = "postgresql" if "active" in service_status else "Unknown"
 
-            startup = self.detect_startup_method("postgresql", pid)
+        # 3. Detect ports
+        ports = run_cmd("ss -ltnp | grep postgres | awk '{print $4}' | awk -F':' '{print $NF}'")
+        ports = list(sorted(set([p.strip() for p in ports.splitlines() if p.strip().isdigit()])))
 
-            db_list.append({
-                "Database Engine": "POSTGRESQL",
-                "Version": version.strip(),
-                "Port": ", ".join(matching_ports),
-                "Service": name,
-                "Running": "Yes",
-                "Startup Method": startup
-            })
+        if not ports:
+            ports = ["Unknown"]
 
-        return db_list
+        # 4. Startup method
+        if "active" in service_status:
+            startup = "systemd"
+        else:
+            startup = "manual"
+
+        # 5. Append only once
+        results.append({
+            "Engine": "POSTGRESQL",
+            "Version": version,
+            "Port": ", ".join(ports),
+            "Service": service_name,
+            "Running": "Yes" if ports else "No",
+            "Startup": startup
+        })
+
+        return results
+
 
     # ==========================
     # DETECT ALL
