@@ -184,6 +184,9 @@ class DatabaseAssessment:
         """
         Cari table & kolom yang nama kolomnya ada di self.pii_columns
         return: {table_name: [ {column, type}, ... ], ...}
+
+        NOTE:
+        - Pakai COLUMN_TYPE supaya dapat detail lengkap: varchar(100), bigint(20) unsigned, dll.
         """
         if not self.pii_columns:
             return {}
@@ -192,13 +195,13 @@ class DatabaseAssessment:
         placeholders = ", ".join(["%s"] * len(self.pii_columns))
 
         sql = f"""
-        SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE
+        SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE
         FROM information_schema.columns
         WHERE table_schema = %s
           AND LOWER(COLUMN_NAME) IN ({placeholders})
         """
 
-        params = [db_name] + self.pii_columns
+        params = [db_name] + [c.lower() for c in self.pii_columns]
 
         with conn.cursor() as cur:
             cur.execute(sql, params)
@@ -208,7 +211,7 @@ class DatabaseAssessment:
         for r in rows:
             table = r["TABLE_NAME"]
             col = r["COLUMN_NAME"]
-            dtype = r["DATA_TYPE"]
+            dtype = r.get("COLUMN_TYPE") or r.get("DATA_TYPE")
             result.setdefault(table, []).append({"column": col, "type": dtype})
 
         return result
@@ -302,18 +305,19 @@ class DatabaseAssessment:
     # ==============================
     def _get_path_users_once(self, path: str):
         """
-        Return list of 'PID(user)' yang menggunakan path tersebut via fuser.
-        - fuser -u <path> -> output berisi pid(user)
-        Contoh: '/var/lib/mysql/perusahaan_db: 758514(mysql)'
-        NOTE:
-          - fuser exit code:
-              0 = ada proses
-              1 = tidak ada proses
-          - Jadi kita TIDAK boleh pakai check=True.
+        Return list of username yang menggunakan path tersebut via fuser.
+        Contoh output fuser:
+          /var/lib/mysql/perusahaan_db: 758514(mysql) 758600(mysql)
+
+        Kita ambil 'mysql'-nya, bukan PID-nya.
+        NOTE exit code fuser:
+          - 0 = ada proses
+          - 1 = tidak ada proses
+        Jadi TIDAK boleh pakai check=True.
         """
         try:
-            # Pakai check=False supaya non-zero exit code tidak dilempar sebagai exception
             cmd = f"fuser -u {path}"
+            # check=False supaya exit code 1 tidak raise exception
             output = run_shell(cmd, check=False, capture_output=True) or ""
             output = output.strip()
 
@@ -332,8 +336,16 @@ class DatabaseAssessment:
                     token = token.strip()
                     if not token:
                         continue
-                    # token biasanya format '758514(mysql)'
-                    users.add(token)
+
+                    # Token format paling umum: "758514(mysql)"
+                    # Kita ambil isi dalam kurung sebagai username.
+                    if "(" in token and ")" in token:
+                        inside = token[token.find("(") + 1 : token.rfind(")")]
+                        if inside:
+                            users.add(inside)
+                    else:
+                        # fallback: kalau tidak ada kurung, simpan token apa adanya
+                        users.add(token)
 
             return sorted(users)
 
