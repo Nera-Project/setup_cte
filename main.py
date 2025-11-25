@@ -6,6 +6,7 @@ from core.environment import EnvironmentManager
 from core.repository import RepositoryManager
 from core.compatibility_checker import CompatibilityChecker  # ✅ NEW import
 from core.host_info import HostInfoCollector
+from core.db_assessment import DatabaseAssessment
 
 # Logging setup
 logging.basicConfig(
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 def main():
     parser = argparse.ArgumentParser(description="Thales CTE Setup & Integration Tool")
     parser.add_argument("--check", action="store_true", help="Check environment and compatibility")
+    parser.add_argument("--deep-check", action="store_true", help="Deep check: host check + database PII & path assessment")
     parser.add_argument("--install", action="store_true", help="Install Thales CTE Agent")
     parser.add_argument("--encrypt", action="store_true", help="Encrypt asset folder")
     parser.add_argument("--fix", action="store_true", help="Resolve common issues automatically")
@@ -65,6 +67,57 @@ def main():
         except Exception as e:
             logger.error(f"Error during environment check: {e}")
             exit(1)
+
+    elif args.deep_check:
+        logger.info("Performing environment and repository compatibility check...")
+        try:
+            # ✅ 1. Check environment
+            EnvironmentManager.check_system_info()
+
+            # ✅ 2. Fetch repository info
+            repo = RepositoryManager()
+            url = repo.fetch_active_repo_url()
+            logger.info(f"Active repository URL detected: {url}")
+
+            # ✅ 3. Compatibility check (new feature)
+            compat = CompatibilityChecker()
+            kernel_version = compat.get_kernel_version()
+            logger.info(f"Detected kernel version: {kernel_version}")
+
+            table = compat.check_kernel_support(kernel_version)
+            if table:
+                compat.print_table(table)
+                summary = compat.summarize_compatibility(table)
+                if summary["compatible"]:
+                    logger.info(f"✅ This system is compatible with Thales CTE: {summary['reason']}")
+                else:
+                    logger.warning(f"⚠️  This system might NOT be fully compatible: {summary['reason']}")
+            else:
+                logger.warning("Could not determine Thales CTE compatibility automatically.")
+
+
+            host_info  = HostInfoCollector().collect()
+
+            db_assessor = DatabaseAssessment()
+            db_result = db_assessor.run()
+
+            # Merge hasil DB ke host_info
+            if "Directory path for Encryption" in db_result:
+                host_info["Directory path for Encryption"] = db_result["Directory path for Encryption"]
+            if "Database Name" in db_result:
+                host_info["Database Name"] = db_result["Database Name"]
+
+            HostInfoCollector.print_table(host_info)
+            logger.info("Deep check (host + database) completed successfully.")
+    
+            HostInfoCollector.print_table(host_info)
+            logger.info("Environment check completed successfully.")
+            
+
+        except Exception as e:
+            logger.error(f"Error during deep-check: {e}")
+            exit(1)
+
 
     elif args.install:
         logger.info("CTE Agent installation process started...")
