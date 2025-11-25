@@ -299,6 +299,20 @@ class DatabaseAssessment:
                         }
                     )
         return summary
+    
+    def _get_username_from_pid(self, pid: str) -> str:
+        """
+        Ambil username dari PID pakai ps.
+        Return "" kalau gagal.
+        """
+        try:
+            cmd = f"ps -o user= -p {pid}"
+            out = run_shell(cmd, check=False, capture_output=True) or ""
+            out = out.strip()
+            return out
+        except Exception as e:
+            logger.debug("Failed to resolve username from pid %s: %s", pid, e)
+            return ""
 
     # ==============================
     # fuser helper
@@ -337,15 +351,25 @@ class DatabaseAssessment:
                     if not token:
                         continue
 
-                    # Token format paling umum: "758514(mysql)"
-                    # Kita ambil isi dalam kurung sebagai username.
+                    # Pola 1: "758514(mysql)" → ambil isi dalam kurung
                     if "(" in token and ")" in token:
                         inside = token[token.find("(") + 1 : token.rfind(")")]
                         if inside:
                             users.add(inside)
-                    else:
-                        # fallback: kalau tidak ada kurung, simpan token apa adanya
-                        users.add(token)
+                        continue
+
+                    # Pola 2: pure angka "758514" → resolve via ps
+                    if token.isdigit():
+                        uname = self._get_username_from_pid(token)
+                        if uname:
+                            users.add(uname)
+                        else:
+                            # last resort: simpan PID kalau username nggak bisa di-resolve
+                            users.add(token)
+                        continue
+
+                    # Pola 3: sudah username (misal "mysql")
+                    users.add(token)
 
             return sorted(users)
 
