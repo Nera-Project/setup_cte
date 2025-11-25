@@ -302,32 +302,46 @@ class DatabaseAssessment:
     # ==============================
     def _get_path_users_once(self, path: str):
         """
-        Return list of 'COMMAND(USER)' yang pakai path itu, via lsof +d.
+        Return list of 'PID(user)' yang menggunakan path tersebut via fuser.
+        - fuser -u <path> -> output berisi pid(user)
+        Contoh: '758514(mysql)'
         """
         try:
-            cmd = f"lsof +d {path}"
+            # -u => tampilkan user; -m -> treat sebagai mount / file-system object
+            cmd = f"fuser -u {path}"
             output = run_shell(cmd, capture_output=True) or ""
-            lines = output.splitlines()
-            if len(lines) <= 1:
+            output = output.strip()
+
+            if not output:
                 return []
 
+            # Contoh output:
+            # /var/lib/mysql/perusahaan_db: 758514(mysql)
+            # Kita ambil bagian setelah ':'
             users = set()
-            # skip header line
-            for line in lines[1:]:
-                parts = line.split()
-                if len(parts) >= 3:
-                    command = parts[0]
-                    user = parts[2]
-                    users.add(f"{command} ({user})")
+            for line in output.splitlines():
+                if ":" in line:
+                    _, pids_part = line.split(":", 1)
+                else:
+                    pids_part = line
+
+                for token in pids_part.split():
+                    token = token.strip()
+                    if not token:
+                        continue
+                    # token biasanya sudah dalam format 'PID(user)'
+                    users.add(token)
 
             return sorted(users)
+
         except Exception as e:
-            logger.error("Failed to run lsof on %s: %s", path, e)
+            logger.error("Failed to run fuser on %s: %s", path, e)
             return []
+
 
     def _get_path_users_deep(self, path: str):
         """
-        Cek path & parent directory (satu level di atas) pakai lsof +d
+        Cek path & parent directory (satu level di atas) pakai fuser -u
         """
         path = path.rstrip("/")
         paths_to_check = set()
