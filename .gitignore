@@ -73,10 +73,12 @@ Pipfile.lock
 .env.*.local
 .env.*
 venv/
+venv_cte/
 venv.bak/
 ENV/
 env/
 .venv/
+.venv_cte/
 __pycache__/
 **/__pycache__/
 
