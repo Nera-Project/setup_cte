@@ -5,25 +5,28 @@ from typing import List, Dict
 import pymysql
 import psycopg2
 from psycopg2.extras import DictCursor
-from core.env_loader import load_env, get_env
 
+from core.env_loader import load_env, get_env
 from core.logger import get_logger
+from utils.command import run_shell
 
 logger = get_logger(__name__)
 
 
 class DatabaseAssessment:
     """
-    - Load DB config from .env
+    - Load DB config dari .env
     - Connect ke DB (MySQL/MariaDB/PostgreSQL)
     - Deteksi Directory path for Encryption dari metadata DB
-    - (PII detection bisa ditambah di sini nanti)
+    - Deteksi tabel & kolom PII berdasarkan nama kolom (PII_COLUMNS)
+    - Hitung total record PII per kolom
+    - Deteksi proses yang menggunakan path (lsof)
     """
 
     def __init__(self, pii_columns: List[str] = None, env_path: str = ".env"):
         self.env_path = env_path
-        self.config = {}
-        self.pii_columns = pii_columns or []
+        self.config: Dict[str, str] = {}
+        self.pii_columns: List[str] = pii_columns or []
         self._load_env()
 
     # ==============================
@@ -41,9 +44,20 @@ class DatabaseAssessment:
             "database": get_env("DB_NAME"),
         }
 
-        ...
+        # PII_COLUMNS di .env (comma separated)
         pii_env = get_env("PII_COLUMNS", "")
-        ...
+        if pii_env:
+            cols = [c.strip() for c in pii_env.split(",") if c.strip()]
+            # Simpan dalam lowercase untuk mempermudah compare
+            self.pii_columns = [c.lower() for c in cols]
+
+        logger.info(
+            "DB config loaded: type=%s host=%s db=%s pii_columns=%s",
+            self.config["db_type"],
+            self.config["host"],
+            self.config["database"],
+            ",".join(self.pii_columns) if self.pii_columns else "(none)",
+        )
 
     # ==============================
     # Connection
@@ -94,32 +108,35 @@ class DatabaseAssessment:
             cur.execute("SHOW VARIABLES LIKE 'datadir';")
             row = cur.fetchone()
             if row:
-                datadir = row.get("Value")
+                # untuk pymysql DictCursor, row = {"Variable_name": "...", "Value": "..."}
+                datadir = row.get("Value") or row.get("value")
 
-            # 2) coba information_schema.FILES
+            # 2) coba information_schema.FILES (jika ada)
             try:
-                cur.execute("""
+                cur.execute(
+                    """
                     SELECT FILE_NAME
                     FROM information_schema.FILES
                     WHERE TABLE_SCHEMA = %s
                       AND FILE_NAME IS NOT NULL
                     LIMIT 1;
-                """, (db_name,))
+                    """,
+                    (db_name,),
+                )
                 frow = cur.fetchone()
                 if frow:
-                    file_path = frow.get("FILE_NAME")
+                    file_path = frow.get("FILE_NAME") or frow.get("file_name")
             except Exception as e:
-                logger.warning(f"information_schema.FILES not available or error: {e}")
+                logger.warning("information_schema.FILES not available or error: %s", e)
 
         if file_path:
-            # contoh: /data/mysqldata/cbhrm/users.ibd -> parent dir
             encrypt_path = os.path.dirname(file_path)
-            logger.info(f"Detected encryption path from FILE_NAME: {encrypt_path}")
+            logger.info("Detected encryption path from FILE_NAME: %s", encrypt_path)
             return encrypt_path
 
         if datadir:
             encrypt_path = os.path.join(datadir, db_name)
-            logger.info(f"Detected encryption path from datadir: {encrypt_path}")
+            logger.info("Detected encryption path from datadir: %s", encrypt_path)
             return encrypt_path
 
         logger.warning("Failed to detect encryption path for MySQL/MariaDB.")
@@ -146,7 +163,7 @@ class DatabaseAssessment:
 
         if data_directory and db_oid:
             encrypt_path = os.path.join(data_directory, "base", str(db_oid))
-            logger.info(f"Detected encryption path for PostgreSQL: {encrypt_path}")
+            logger.info("Detected encryption path for PostgreSQL: %s", encrypt_path)
             return encrypt_path
 
         logger.warning("Failed to detect encryption path for PostgreSQL.")
@@ -161,28 +178,238 @@ class DatabaseAssessment:
         return "Unknown"
 
     # ==============================
+    # PII discovery (MySQL/MariaDB)
+    # ==============================
+    def _find_pii_columns_mysql(self, conn) -> Dict[str, List[Dict[str, str]]]:
+        """
+        Cari table & kolom yang nama kolomnya ada di self.pii_columns
+        return: {table_name: [ {column, type}, ... ], ...}
+        """
+        if not self.pii_columns:
+            return {}
+
+        db_name = self.config["database"]
+        placeholders = ", ".join(["%s"] * len(self.pii_columns))
+
+        sql = f"""
+        SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND LOWER(COLUMN_NAME) IN ({placeholders})
+        """
+
+        params = [db_name] + self.pii_columns
+
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+        result: Dict[str, List[Dict[str, str]]] = {}
+        for r in rows:
+            table = r["TABLE_NAME"]
+            col = r["COLUMN_NAME"]
+            dtype = r["DATA_TYPE"]
+            result.setdefault(table, []).append({"column": col, "type": dtype})
+
+        return result
+
+    def _count_pii_records_mysql(self, conn, pii_map: Dict[str, List[Dict[str, str]]]):
+        """
+        Hitung total record per kolom PII (simple COUNT).
+        pii_map: {table: [{column, type}, ...]}
+        """
+        summary = []
+        with conn.cursor() as cur:
+            for table, cols in pii_map.items():
+                for col_info in cols:
+                    col = col_info["column"]
+                    q = f"SELECT COUNT({col}) AS cnt FROM `{table}`"
+                    try:
+                        cur.execute(q)
+                        row = cur.fetchone()
+                        cnt = row["cnt"] if row else 0
+                    except Exception as e:
+                        logger.error("Failed counting %s.%s: %s", table, col, e)
+                        cnt = "Error"
+                    summary.append(
+                        {
+                            "table": table,
+                            "column": col,
+                            "count": cnt,
+                            "type": col_info["type"],
+                        }
+                    )
+        return summary
+
+    # ==============================
+    # PII discovery (PostgreSQL)
+    # ==============================
+    def _find_pii_columns_postgres(self, conn) -> Dict[str, List[Dict[str, str]]]:
+        if not self.pii_columns:
+            return {}
+
+        db_name = self.config["database"]
+        placeholders = ", ".join(["%s"] * len(self.pii_columns))
+
+        # di Postgres, informasi kolom ada di information_schema.columns
+        sql = f"""
+        SELECT table_name, column_name, data_type
+        FROM information_schema.columns
+        WHERE table_catalog = %s
+          AND LOWER(column_name) IN ({placeholders})
+        """
+
+        params = [db_name] + self.pii_columns
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+        result: Dict[str, List[Dict[str, str]]] = {}
+        for r in rows:
+            table = r["table_name"]
+            col = r["column_name"]
+            dtype = r["data_type"]
+            result.setdefault(table, []).append({"column": col, "type": dtype})
+
+        return result
+
+    def _count_pii_records_postgres(self, conn, pii_map: Dict[str, List[Dict[str, str]]]):
+        summary = []
+        with conn.cursor() as cur:
+            for table, cols in pii_map.items():
+                for col_info in cols:
+                    col = col_info["column"]
+                    q = f'SELECT COUNT("{col}") AS cnt FROM "{table}"'
+                    try:
+                        cur.execute(q)
+                        row = cur.fetchone()
+                        cnt = row["cnt"] if row else 0
+                    except Exception as e:
+                        logger.error("Failed counting %s.%s: %s", table, col, e)
+                        cnt = "Error"
+                    summary.append(
+                        {
+                            "table": table,
+                            "column": col,
+                            "count": cnt,
+                            "type": col_info["type"],
+                        }
+                    )
+        return summary
+
+    # ==============================
+    # lsof helper
+    # ==============================
+    def _get_path_users_once(self, path: str):
+        """
+        Return list of 'COMMAND(USER)' yang pakai path itu, via lsof +d.
+        """
+        try:
+            cmd = f"lsof +d {path}"
+            output = run_shell(cmd, capture_output=True) or ""
+            lines = output.splitlines()
+            if len(lines) <= 1:
+                return []
+
+            users = set()
+            # skip header line
+            for line in lines[1:]:
+                parts = line.split()
+                if len(parts) >= 3:
+                    command = parts[0]
+                    user = parts[2]
+                    users.add(f"{command} ({user})")
+
+            return sorted(users)
+        except Exception as e:
+            logger.error("Failed to run lsof on %s: %s", path, e)
+            return []
+
+    def _get_path_users_deep(self, path: str):
+        """
+        Cek path & parent directory (satu level di atas) pakai lsof +d
+        """
+        path = path.rstrip("/")
+        paths_to_check = set()
+        if path:
+            paths_to_check.add(path)
+            parent = os.path.dirname(path)
+            if parent and parent != path:
+                paths_to_check.add(parent)
+
+        users = set()
+        for p in paths_to_check:
+            for u in self._get_path_users_once(p):
+                users.add(u)
+
+        return sorted(users)
+
+    # ==============================
     # Main run()
     # ==============================
     def run(self) -> Dict[str, str]:
         """
-        Minimal output:
+        Output:
         {
           "Directory path for Encryption": "...",
-          "Database Name": "..."
+          "Database Name": "...",
+          "List Column have PII": "...",
+          "Character Data per PII Column": "...",
+          "Total PII Record": "...",
+          "Who users used the path": "..."
         }
-        Nanti bisa ditambah PII info.
         """
         conn = None
         try:
             conn = self.get_connection()
-            encrypt_path = self.detect_encrypt_path(conn)
+            db_type = self.config["db_type"]
 
-            result = {
+            encrypt_path = self.detect_encrypt_path(conn)
+            result: Dict[str, str] = {
                 "Directory path for Encryption": encrypt_path,
                 "Database Name": self.config["database"],
             }
 
-            # TODO: di sini nanti tambah PII analysis
+            pii_map = {}
+            pii_summary = []
+
+            # PII detection per engine
+            if db_type in ("mysql", "mariadb"):
+                pii_map = self._find_pii_columns_mysql(conn)
+                pii_summary = self._count_pii_records_mysql(conn, pii_map)
+            elif db_type in ("postgres", "postgresql"):
+                pii_map = self._find_pii_columns_postgres(conn)
+                pii_summary = self._count_pii_records_postgres(conn, pii_map)
+
+            # mapping ke format yang kamu mau di tabel
+            if pii_map:
+                # List table + kolom PII
+                pii_str = []
+                for table, cols in pii_map.items():
+                    col_names = ", ".join(c["column"] for c in cols)
+                    pii_str.append(f"{table}: {col_names}")
+                result["List Column have PII"] = "; ".join(pii_str)
+
+                # Tipe data per kolom PII
+                char_detail = []
+                for table, cols in pii_map.items():
+                    for c in cols:
+                        char_detail.append(f"{table}.{c['column']}: {c['type']}")
+                result["Character Data per PII Column"] = ", ".join(char_detail)
+
+            if pii_summary:
+                cnt_str = []
+                for s in pii_summary:
+                    cnt_str.append(f"{s['table']}.{s['column']}={s['count']}")
+                result["Total PII Record"] = ", ".join(cnt_str)
+
+            # lsof path
+            if encrypt_path and encrypt_path != "Unknown":
+                users = self._get_path_users_deep(encrypt_path)
+                result["Who users used the path"] = (
+                    ", ".join(users) if users else "No open files detected"
+                )
+
             return result
 
         finally:

@@ -7,13 +7,9 @@ from core.repository import RepositoryManager
 from core.compatibility_checker import CompatibilityChecker  # ✅ NEW import
 from core.host_info import HostInfoCollector
 from core.db_assessment import DatabaseAssessment
+from core.logger import get_logger
 
-# Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+# Logging load
 logger = logging.getLogger(__name__)
 
 
@@ -102,16 +98,14 @@ def main():
             db_result = db_assessor.run()
 
             # Merge hasil DB ke host_info
-            if "Directory path for Encryption" in db_result:
-                host_info["Directory path for Encryption"] = db_result["Directory path for Encryption"]
-            if "Database Name" in db_result:
-                host_info["Database Name"] = db_result["Database Name"]
+            # if "Directory path for Encryption" in db_result:
+            #     host_info["Directory path for Encryption"] = db_result["Directory path for Encryption"]
+            # if "Database Name" in db_result:
+            #     host_info["Database Name"] = db_result["Database Name"]
 
+            host_info.update(db_result)
             HostInfoCollector.print_table(host_info)
             logger.info("Deep check (host + database) completed successfully.")
-    
-            HostInfoCollector.print_table(host_info)
-            logger.info("Environment check completed successfully.")
             
 
         except Exception as e:
