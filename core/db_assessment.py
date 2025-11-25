@@ -298,28 +298,31 @@ class DatabaseAssessment:
         return summary
 
     # ==============================
-    # lsof helper
+    # fuser helper
     # ==============================
     def _get_path_users_once(self, path: str):
         """
         Return list of 'PID(user)' yang menggunakan path tersebut via fuser.
         - fuser -u <path> -> output berisi pid(user)
-        Contoh: '758514(mysql)'
+        Contoh: '/var/lib/mysql/perusahaan_db: 758514(mysql)'
+        NOTE:
+          - fuser exit code:
+              0 = ada proses
+              1 = tidak ada proses
+          - Jadi kita TIDAK boleh pakai check=True.
         """
         try:
-            # -u => tampilkan user; -m -> treat sebagai mount / file-system object
+            # Pakai check=False supaya non-zero exit code tidak dilempar sebagai exception
             cmd = f"fuser -u {path}"
-            output = run_shell(cmd, capture_output=True) or ""
+            output = run_shell(cmd, check=False, capture_output=True) or ""
             output = output.strip()
 
             if not output:
                 return []
 
-            # Contoh output:
-            # /var/lib/mysql/perusahaan_db: 758514(mysql)
-            # Kita ambil bagian setelah ':'
             users = set()
             for line in output.splitlines():
+                # contoh line: "/var/lib/mysql/perusahaan_db: 758514(mysql) 758600(mysql)"
                 if ":" in line:
                     _, pids_part = line.split(":", 1)
                 else:
@@ -329,7 +332,7 @@ class DatabaseAssessment:
                     token = token.strip()
                     if not token:
                         continue
-                    # token biasanya sudah dalam format 'PID(user)'
+                    # token biasanya format '758514(mysql)'
                     users.add(token)
 
             return sorted(users)
